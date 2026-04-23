@@ -4,7 +4,7 @@
 
 An Agentino skill that takes a source video and a subtitle file (`.srt`, `.vtt`, `.ass`, `.ssa`) and renders an MP4 with the captions baked into the picture — so they show on every platform without a separate subtitle track, and survive any further re-encoding. Audio is stream-copied to avoid quality loss.
 
-Designed to chain after [`video-slideshow`](https://github.com/dagoSte/agentino-skill-video-slideshow) or any pipeline that produced an MP4 + SRT (e.g. [`video-voiceover`](https://github.com/dagoSte/agentino-skill-video-voiceover) with edge-tts).
+Designed to chain after [`video-slideshow`](https://github.com/agentino-os/agentino-skill-video-slideshow) or any pipeline that produced an MP4 + SRT (e.g. [`video-voiceover`](https://github.com/agentino-os/agentino-skill-video-voiceover) with edge-tts).
 
 ## Install
 
@@ -14,7 +14,7 @@ Requires [Agentino](https://github.com/dagoSte/agentino) ≥ `1.2.0-rc.1` and `f
 brew install ffmpeg                                                    # macOS
 # sudo apt install ffmpeg                                              # Debian / Ubuntu
 
-agentino marketplace install dagoSte/agentino-skill-video-captions-burn
+agentino marketplace install agentino-os/agentino-skill-video-captions-burn
 agentino skill show video-captions-burn
 ```
 
@@ -59,6 +59,14 @@ agentino skill exec video-captions-burn --input-json '{
   "position": "bottom"
 }
 ```
+
+## Use with agentino run
+
+```bash
+agentino run "burn the captions from /tmp/talk.srt into /tmp/talk.mp4 and save to /tmp/out.mp4"
+```
+
+The LLM planner recognises "burn captions" + source video + subtitle file as the trigger for this skill.
 
 ## Inputs
 
