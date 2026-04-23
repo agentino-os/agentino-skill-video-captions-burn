@@ -1,0 +1,210 @@
+metadata:
+  name: video-captions-burn
+  version: "1.0.0"
+  description: "Burn SRT/VTT subtitles directly into the video stream with configurable font, colour, outline and position. One ffmpeg pass, pure local."
+  author: Agentino
+  tags:
+    - video
+    - media
+    - captions
+    - subtitles
+    - ffmpeg
+    - marketplace
+  license: MIT
+  homepage: https://github.com/agentino/agentino
+
+spec:
+  input:
+    - name: video_path
+      type: string
+      description: "Absolute path to the source video."
+      required: true
+    - name: subtitles_path
+      type: string
+      description: "Absolute path to an .srt or .vtt file."
+      required: true
+    - name: output_path
+      type: string
+      description: "Destination MP4. Defaults to '<video>.captioned.<ext>' next to the source."
+      required: false
+      default: ""
+    - name: font_name
+      type: string
+      description: "Font family name. Must be installed on the system."
+      required: false
+      default: "Arial"
+    - name: font_size
+      type: integer
+      description: "Font size in points. 28 is legible at 1080p, 20 at 720p, 36 at 4K."
+      required: false
+      default: 28
+    - name: font_color
+      type: string
+      description: "Subtitle fill colour. Named ('white','yellow','cyan','red','green','black') or '#RRGGBB'."
+      required: false
+      default: "white"
+    - name: outline_color
+      type: string
+      description: "Outline colour drawn around glyphs for contrast. Same format as font_color."
+      required: false
+      default: "black"
+    - name: outline_width
+      type: integer
+      description: "Outline thickness in pixels. 2 is a safe default; 0 disables the outline."
+      required: false
+      default: 2
+    - name: position
+      type: string
+      description: "Vertical placement: 'bottom' | 'top' | 'middle' (always horizontally centred)."
+      required: false
+      default: "bottom"
+    - name: margin_v
+      type: integer
+      description: "Vertical margin from the chosen edge, in pixels."
+      required: false
+      default: 40
+
+  output:
+    type: object
+    description: "Render summary: output_path, input_duration_s, output_duration_s, subtitle_count."
+
+  security:
+    sandbox_level: none
+    network_access: false
+    file_access: read-write
+
+  timeout_s: 600.0
+
+  executor:
+    type: python
+    code: |
+      import re
+      import shutil
+      import subprocess
+      import tempfile
+      from pathlib import Path
+
+      NAMED_COLOURS = {
+          "white":  "FFFFFF",
+          "black":  "000000",
+          "yellow": "FFFF00",
+          "cyan":   "00FFFF",
+          "red":    "FF0000",
+          "green":  "00FF00",
+          "blue":   "0000FF",
+          "gray":   "808080",
+          "grey":   "808080",
+      }
+
+      def _which(cmd):
+          p = shutil.which(cmd)
+          if not p:
+              raise RuntimeError(f"'{cmd}' not found on PATH. Install ffmpeg (brew/apt).")
+          return p
+
+      def _probe_duration(path):
+          ffprobe = _which("ffprobe")
+          r = subprocess.run(
+              [ffprobe, "-v", "error", "-show_entries", "format=duration",
+               "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+              check=True, capture_output=True, text=True, timeout=30,
+          )
+          return float(r.stdout.strip())
+
+      def _to_ass_bgr(colour_str):
+          # ASS colour format is &H00BBGGRR (alpha=00 means opaque).
+          s = colour_str.strip().lower()
+          if s in NAMED_COLOURS:
+              rgb = NAMED_COLOURS[s]
+          elif s.startswith("#") and re.fullmatch(r"#[0-9a-f]{6}", s):
+              rgb = s[1:].upper()
+          else:
+              raise ValueError(
+                  f"Unknown colour '{colour_str}'. Use a named colour "
+                  f"({', '.join(NAMED_COLOURS)}) or '#RRGGBB'."
+              )
+          r, g, b = rgb[0:2], rgb[2:4], rgb[4:6]
+          return f"&H00{b}{g}{r}"
+
+      def _count_srt_entries(path):
+          try:
+              txt = Path(path).read_text(encoding="utf-8", errors="replace")
+          except OSError:
+              return 0
+          # A cue is any line matching "HH:MM:SS,mmm --> HH:MM:SS,mmm" (SRT) or with "." (VTT).
+          return len(re.findall(r"\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->", txt))
+
+      video_path = Path(str(input.get("video_path") or "")).expanduser().resolve()
+      if not video_path.is_file():
+          raise FileNotFoundError(f"video_path not found: {video_path}")
+
+      subs_path = Path(str(input.get("subtitles_path") or "")).expanduser().resolve()
+      if not subs_path.is_file():
+          raise FileNotFoundError(f"subtitles_path not found: {subs_path}")
+      if subs_path.suffix.lower() not in (".srt", ".vtt", ".ass", ".ssa"):
+          raise ValueError(
+              f"subtitles_path must end in .srt, .vtt, .ass or .ssa (got '{subs_path.suffix}')."
+          )
+
+      requested_out = (input.get("output_path") or "").strip()
+      if requested_out:
+          output_path = Path(requested_out).expanduser().resolve()
+          output_path.parent.mkdir(parents=True, exist_ok=True)
+      else:
+          stem = video_path.stem
+          ext = video_path.suffix or ".mp4"
+          output_path = video_path.with_name(f"{stem}.captioned{ext}")
+
+      font_name = (input.get("font_name") or "Arial").strip()
+      font_size = int(input.get("font_size") or 28)
+      fill = _to_ass_bgr(input.get("font_color") or "white")
+      outline_col = _to_ass_bgr(input.get("outline_color") or "black")
+      outline_w = max(0, int(input.get("outline_width") or 2))
+      position = (input.get("position") or "bottom").strip().lower()
+      margin_v = max(0, int(input.get("margin_v") or 40))
+
+      alignment_map = {"bottom": 2, "top": 8, "middle": 10}
+      if position not in alignment_map:
+          raise ValueError(f"position must be 'bottom', 'top' or 'middle' (got '{position}').")
+      alignment = alignment_map[position]
+
+      force_style = (
+          f"FontName={font_name},FontSize={font_size},"
+          f"PrimaryColour={fill},OutlineColour={outline_col},"
+          f"Outline={outline_w},BorderStyle=1,"
+          f"Alignment={alignment},MarginV={margin_v}"
+      )
+
+      # ffmpeg's subtitles filter needs the path escaped — it treats ':' and '\\' specially.
+      def _escape_filter_path(p):
+          return str(p).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+      subs_escaped = _escape_filter_path(subs_path)
+      vf = f"subtitles={subs_escaped}:force_style='{force_style}'"
+
+      ffmpeg = _which("ffmpeg")
+      cmd = [
+          ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+          "-i", str(video_path),
+          "-vf", vf,
+          "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+          "-pix_fmt", "yuv420p",
+          "-c:a", "copy",
+          "-movflags", "+faststart",
+          str(output_path),
+      ]
+      subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=1200)
+
+      in_dur = _probe_duration(video_path)
+      out_dur = _probe_duration(output_path)
+      sub_count = _count_srt_entries(subs_path)
+
+      result = {
+          "output_path": str(output_path),
+          "input_duration_s": round(in_dur, 3),
+          "output_duration_s": round(out_dur, 3),
+          "subtitle_count": sub_count,
+          "font_name": font_name,
+          "font_size": font_size,
+          "position": position,
+      }
